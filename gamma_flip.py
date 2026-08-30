@@ -1,3 +1,82 @@
+"""
+gamma_flip.py
+=============
+SPY(또는 다른 옵션 유동성이 충분한 ETF/지수) 옵션체인을 이용해
+딜러 감마 익스포저(GEX)를 추정하고 감마 플립(Zero Gamma) 레벨을 계산합니다.
+
+데이터 소스: Yahoo Finance (yfinance) - 무료, 약간의 지연 있음.
+* 지수 옵션(SPX)은 yfinance로 직접 못 가져오므로 SPY(SPX의 1/10 트래킹 ETF)를 기본값으로 사용합니다.
+* SPY 기준 플립 레벨에 10을 곱하면 대략적인 SPX 환산값이 됩니다 (완전히 정확하지는 않음).
+
+방법론 (업계에서 흔히 쓰이는 단순화된 GEX 계산 방식):
+1. 만기별 콜/풋 옵션체인에서 오픈인터레스트(OI)와 내재변동성(IV)을 가져온다.
+2. 여러 개의 가상 기초자산 가격(spot 후보군)에 대해 Black-Scholes 감마를 각 옵션마다 재계산한다.
+   (감마는 spot에 따라 달라지므로, "플립 지점"을 찾으려면 spot을 바꿔가며 감마를 다시 계산해야 한다.)
+3. 딜러 포지셔닝 관례(다수의 공개 GEX 계산기가 쓰는 표준 가정):
+      - 콜 매수 주문이 많다고 가정 -> 딜러는 콜에 대해 매도(숏) 포지션 -> 콜 감마는 딜러 기준 (+)로 집계
+      - 풋 매수 주문이 많다고 가정 -> 딜러는 풋에 대해 매수(롱) 포지션 -> 풋 감마는 딜러 기준 (-)로 집계
+   즉: GEX(spot) = Σ [ CallGamma(spot)*CallOI - PutGamma(spot)*PutOI ] * 100 * spot^2 * 0.01
+   ※ 이는 실제 딜러 포지션을 알 수 없는 상태에서의 표준적 근사치이며, 실제와 다를 수 있습니다.
+4. GEX(spot) 곡선이 양수에서 음수로 바뀌는 지점(0을 교차하는 지점)이 감마 플립 레벨이다.
+
+콜월 / 풋월 (Call Wall / Put Wall):
+플립 레벨과는 별개의 계산입니다. 플립은 콜-풋을 "순계산"해서 0이 되는 지점을 찾는 것이고,
+콜월/풋월은 콜과 풋을 각각 따로 보고 오픈인터레스트가 가장 많이 쌓인 행사가를 찾는 것입니다.
+   콜월 = 해당 만기에서 콜 OI가 가장 큰 행사가 (다수 GEX 서비스가 쓰는 정의)
+   풋월 = 해당 만기에서 풋 OI가 가장 큰 행사가
+계약이 많이 몰린 행사가일수록 그 근처의 딜러 헤지 물량도 커지기 때문에, 콜월은 저항으로,
+풋월은 지지로 작용하는 경향이 있다고 해석됩니다. 다만 이것도 "경향"이지 확정적 신호는 아닙니다.
+※ 벤더에 따라 순수 OI가 아니라 달러 감마(OI×감마×승수×spot²)로 가중해서 벽을 뽑기도 합니다.
+   이 스크립트는 가장 널리 쓰이는 정의인 순수 OI 기준을 채택했습니다.
+
+사용법:
+    python3 gamma_flip.py                 # 기본값: SPY, 만기 45일 이내
+    python3 gamma_flip.py --ticker QQQ    # 나스닥100(QQQ) 기준
+    python3 gamma_flip.py --ticker SPY --max-days 30
+
+NQ=F / ES=F (CME 선물옵션) 지원 — Barchart 캡처까지 이 파일 하나로 통합됨:
+    python3 gamma_flip.py --ticker NQ=F
+    python3 gamma_flip.py --ticker ES=F --futures-csv barchart_options_capture.csv
+    python3 gamma_flip.py --ticker NQ=F --recapture        # CSV가 있어도 강제로 새로 캡처
+    python3 gamma_flip.py --ticker NQ=F --capture-both      # NQ/ES 둘 다 한 번에 캡처
+
+    ⚠️ 중요: yfinance는 CME 선물옵션 체인 자체를 지원하지 않습니다(NQ=F/ES=F로
+    가격은 가져와도 .option_chain()은 안 됨). 그래서 --ticker가 NQ, NQ=F, ES,
+    ES=F 중 하나면 yfinance를 아예 호출하지 않고 대신:
+      1) barchart_options_capture.csv가 이미 있으면 그걸 바로 읽어서 분석합니다.
+      2) 없으면(또는 --recapture를 주면) Barchart에서 직접 캡처한 뒤, 그 결과로
+         바로 분석까지 이어서 합니다 — 두 스크립트를 따로 돌릴 필요 없이 이 파일
+         하나로 끝납니다.
+    캡처는 기본적으로 requests만으로(브라우저 불필요) 이루어집니다 — Barchart
+    옵션 페이지의 csrf_token/XSRF-TOKEN이 페이지 최초 응답에 정적으로 실려 오는
+    값이라 브라우저로 JS를 실행하지 않아도 얻을 수 있다는 게 실서버(2026-08,
+    구형 Ubuntu라 Chromium이 아예 못 뜨는 환경)에서 확인됐습니다. requests 방식이
+    실패하는 심볼에 한해서만, playwright가 설치돼 있으면 자동으로 그쪽으로
+    재시도합니다(설치: pip install playwright && playwright install --with-deps
+    chromium) — 즉 playwright는 이제 필수가 아니라 선택적 보험입니다.
+    Barchart 이용약관상 자동 스크래핑은 비정기적·개인적 용도로만 쓰시길
+    권장하며, 반복적/공개적 사용 시 IP가 차단될 수 있습니다.
+    (참고: "ES"는 실제로 Eversource Energy라는 뉴욕증권거래소 상장 유틸리티
+    회사의 진짜 티커라서, 이 분기 처리 없이 yfinance로 그냥 --ticker ES를
+    돌리면 에러 없이 엉뚱한 회사 옵션 데이터가 나오는 함정이 있었습니다.)
+
+NQ=F/ES=F의 감마 플립 "가격 레벨" 계산 (Black-76 delta 역산):
+    Barchart는 옵션별 impliedVolatility를 거의 항상 N/A로 내려주기 때문에(구독
+    필요 추정), 가상 spot을 스캔해서 플립 가격을 찾으려면 IV가 필요한데 그게
+    없다는 게 오랫동안 막혀 있던 문제였습니다. 대신 Barchart는 delta는 내려주므로,
+    이 delta로부터 Black-76(선물옵션 표준 모델) 공식을 역으로 풀어 IV를 추정합니다.
+      - ITM 옵션은 Black-76 델타가 sigma에 대해 비단조(U자형)라서 같은 delta를
+        만드는 sigma가 2개 이상 나올 수 있습니다. 그리드 스캔으로 모든 근을 찾은 뒤
+        "가장 작은 sigma"를 채택합니다 — 실제 캡처 데이터로 검증한 결과, spot 근처
+        strike들과 부드럽게 이어지는 현실적인 해는 항상 작은 쪽이었고, 큰 쪽은
+        수치적으로는 맞지만 (수백~수천%의 비현실적인 변동성) 경제적으로 스퓨리어스한
+        해였습니다.
+      - 이렇게 역산한 IV(iv_effective, iv_source="delta")는 실제 IV(iv_source="real")가
+        있으면 그걸 우선 쓰고, 없을 때만 보조로 사용합니다.
+      - 역산까지 포함해도 유효 IV가 --futures-min-iv-rows 미만이면 모드 B(Barchart
+        자체 gamma로 "현재 레짐"만 판단, 가격 레벨은 계산 불가)로 자동 전환됩니다.
+"""
+
 import argparse
 import asyncio
 import html as html_module  # 이름 충돌 방지: 캡처 로직 곳곳에서 지역변수 이름으로 html(문자열)을 쓰기 때문
@@ -1116,9 +1195,34 @@ def _build_greeks_rows(records: list) -> list:
     return rows
 
 
+def _build_greeks_rows_from_grouped(call_records: list, put_records: list) -> list:
+    """_build_rows_from_grouped와 로직은 같지만 openInterest를 필수로 요구하지 않는다.
+    'Volatility & Greeks' 페이지의 실제 응답이 Call/Put 분리 구조로 오는 게 실서버에서
+    확인됐는데(2026-08-30), 이 구조에도 openInterest 필드 자체가 없다."""
+    rows = []
+    for records, opt_type in ((call_records, "call"), (put_records, "put")):
+        for r in records:
+            strike = _to_float(_get_field(r, r"strike"))
+            if strike is None:
+                continue
+            iv = _normalize_iv(_to_float(_get_field(r, r"impl.*vol|\biv\b")))
+            delta = _to_float(_get_field(r, r"^delta$"))
+            gamma = _to_float(_get_field(r, r"^gamma$"))
+            theta = _to_float(_get_field(r, r"^theta$"))
+            vega = _to_float(_get_field(r, r"^vega$"))
+            if iv is None and delta is None and gamma is None:
+                continue
+            rows.append({
+                "strike": strike, "type": opt_type,
+                "impliedVolatility": iv, "delta_barchart": delta, "gamma_barchart": gamma,
+                "theta_barchart": theta, "vega_barchart": vega,
+            })
+    return rows
+
+
 def parse_greeks_from_json_candidates(captured: list) -> pd.DataFrame:
     """parse_from_json_candidates와 후보 탐색 로직은 완전히 같다(재사용) —
-    마지막에 행을 만드는 단계만 OI를 요구하지 않는 _build_greeks_rows를 쓴다."""
+    마지막에 행을 만드는 단계만 OI를 요구하지 않는 그릭스 전용 빌더를 쓴다."""
     grouped_best = None
     flat_best = None
     for url, body in captured:
@@ -1138,7 +1242,7 @@ def parse_greeks_from_json_candidates(captured: list) -> pd.DataFrame:
     if grouped_best is not None:
         score, url, path, call_records, put_records = grouped_best
         dprint(f"  [디버그-그릭스] Call/Put 분리 구조 채택: {url}  경로={path}  점수={score}")
-        rows = _build_rows_from_grouped(call_records, put_records)  # 이미 그릭스 포함해서 만듦
+        rows = _build_greeks_rows_from_grouped(call_records, put_records)
         if rows:
             return pd.DataFrame(rows)
         dprint("  [디버그-그릭스] Call/Put 구조에서 행을 못 만듦 → 대체 구조 시도.")
