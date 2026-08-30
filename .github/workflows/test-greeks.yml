@@ -1,0 +1,25 @@
+name: test-greeks-page
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: |
+          pip install pandas numpy scipy requests playwright yfinance
+          playwright install --with-deps chromium
+
+      - name: Volatility & Greeks 페이지 진단
+        env:
+          GAMMA_FLIP_DEBUG: "1"
+        run: python test_greeks_page.py
