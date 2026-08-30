@@ -25,7 +25,7 @@ jobs:
 
       - name: 의존성 설치
         run: |
-          pip install pandas numpy scipy requests playwright
+          pip install pandas numpy scipy requests playwright yfinance
           playwright install --with-deps chromium
 
       - name: NQ/ES 캡처
