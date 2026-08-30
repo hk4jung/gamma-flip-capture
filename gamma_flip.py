@@ -154,6 +154,15 @@ TARGETS = {
     "ES": {"url": "https://www.barchart.com/futures/quotes/ES*0/options"
                   "?moneyness=allRows&futuresOptionsView=merged", "multiplier": 50.0},
 }
+# "Volatility & Greeks" 페이지 — 옵션 프라이스 페이지(TARGETS)와 다른 뷰라 별도 URL.
+# 2026-08 말경 옵션 프라이스 페이지가 더 이상 IV/그릭스를 안 내려주는 게 확인돼서
+# (openInterest 등은 그대로 나옴) 이 페이지에서 그릭스만 따로 캡처해 병합한다.
+TARGETS_GREEKS = {
+    "NQ": {"url": "https://www.barchart.com/futures/quotes/NQ*0/volatility-greeks"
+                  "?moneyness=allRows&futuresOptionsView=merged"},
+    "ES": {"url": "https://www.barchart.com/futures/quotes/ES*0/volatility-greeks"
+                  "?moneyness=allRows&futuresOptionsView=merged"},
+}
 MANUAL_OVERRIDE = {}  # 예: MANUAL_OVERRIDE["NQ"] = {"spot": 25400.0, "expiration": "2026-09-19"}
 MAX_BODY_BYTES = 5_000_000
 CAPTURE_API_URL = "https://www.barchart.com/proxies/core-api/v1/quotes/get"
@@ -1156,6 +1165,137 @@ def write_or_merge_futures_csv(csv_path: str, new_frames_by_symbol: dict) -> pd.
     return full
 
 
+def _build_greeks_rows(records: list) -> list:
+    """'Volatility & Greeks' 페이지(옵션 프라이스 페이지와 다른 뷰) 전용 파서.
+    이 페이지 응답에는 openInterest 자체가 없는 게 정상이라(그릭스만 보여주는
+    화면이라서), 그걸 필수 조건으로 걸지 않는다 — 그 점만 빼면
+    _build_rows_from_records의 "prefix 없는" 분기와 로직이 같다."""
+    rows = []
+    for r in records:
+        strike = _to_float(_get_field(r, r"strike"))
+        if strike is None:
+            continue
+        side_raw = _get_field(r, r"^(type|side|put ?call|option ?type)$")
+        side = str(side_raw).lower() if side_raw is not None else ""
+        opt_type = "call" if side[:1] == "c" else ("put" if side[:1] == "p" else None)
+        if opt_type is None:
+            continue
+        iv = _normalize_iv(_to_float(_get_field(r, r"impl.*vol|\biv\b")))
+        delta = _to_float(_get_field(r, r"^delta$"))
+        gamma = _to_float(_get_field(r, r"^gamma$"))
+        theta = _to_float(_get_field(r, r"^theta$"))
+        vega = _to_float(_get_field(r, r"^vega$"))
+        if iv is None and delta is None and gamma is None:
+            continue  # 아무 그릭스도 못 찾았으면 병합할 가치가 없으니 버림
+        rows.append({
+            "strike": strike, "type": opt_type, "impliedVolatility": iv,
+            "delta_barchart": delta, "gamma_barchart": gamma,
+            "theta_barchart": theta, "vega_barchart": vega,
+        })
+    return rows
+
+
+def parse_greeks_from_json_candidates(captured: list) -> pd.DataFrame:
+    """parse_from_json_candidates와 후보 탐색 로직은 완전히 같다(재사용) —
+    마지막에 행을 만드는 단계만 OI를 요구하지 않는 _build_greeks_rows를 쓴다."""
+    grouped_best = None
+    flat_best = None
+    for url, body in captured:
+        try:
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        for path, call_records, put_records in _find_call_put_groups(data):
+            score = _score_candidate(call_records) + _score_candidate(put_records)
+            if grouped_best is None or score > grouped_best[0]:
+                grouped_best = (score, url, path, call_records, put_records)
+        for path, records in _find_candidate_lists(data):
+            score = _score_candidate(records)
+            if score >= 5 and (flat_best is None or score > flat_best[0]):
+                flat_best = (score, url, path, records)
+
+    if grouped_best is not None:
+        score, url, path, call_records, put_records = grouped_best
+        dprint(f"  [디버그-그릭스] Call/Put 분리 구조 채택: {url}  경로={path}  점수={score}")
+        rows = _build_rows_from_grouped(call_records, put_records)  # 이미 그릭스 포함해서 만듦
+        if rows:
+            return pd.DataFrame(rows)
+        dprint("  [디버그-그릭스] Call/Put 구조에서 행을 못 만듦 → 대체 구조 시도.")
+
+    if flat_best is None:
+        dprint(f"  [디버그-그릭스] JSON 응답 {len(captured)}개를 스캔했지만 그릭스 데이터를 못 찾음.")
+        return pd.DataFrame()
+
+    score, url, path, records = flat_best
+    dprint(f"  [디버그-그릭스] JSON 후보 채택(단일 리스트): {url}  경로={path}  점수={score}  레코드수={len(records)}")
+    dprint(f"  [디버그-그릭스] 첫 레코드 키: {list(records[0].keys())}")
+    rows = _build_greeks_rows(records)
+    return pd.DataFrame(rows)
+
+
+async def capture_greeks_one(symbol: str, cfg: dict, async_playwright) -> pd.DataFrame:
+    """'Volatility & Greeks' 페이지를 캡처해서 (strike, type, impliedVolatility,
+    delta_barchart, gamma_barchart, theta_barchart, vega_barchart)만 돌려준다.
+    capture_one()과 페이지 로드/네트워크 가로채기 방식은 거의 동일하지만,
+    _finalize_capture_df()를 거치지 않는다 — 그 함수는 openInterest 기준으로
+    필터링하는데 이 페이지엔 OI가 아예 없어서 전부 걸러져 버리기 때문이다.
+    반환된 결과는 run_capture_sync()에서 옵션 프라이스 페이지 결과와
+    (strike, type) 기준으로 병합해서 쓴다."""
+    print(f"\n=== {symbol} Volatility & Greeks 캡처 중 ===")
+    captured_json = []
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page(user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        ))
+
+        async def on_response(response):
+            try:
+                ct = response.headers.get("content-type", "")
+                if "json" not in ct.lower():
+                    return
+                body = await response.text()
+                if len(body) > MAX_BODY_BYTES:
+                    return
+                if re.search(r"strike", body, re.I):
+                    captured_json.append((response.url, body))
+            except Exception:
+                pass
+
+        page.on("response", on_response)
+        try:
+            await page.goto(cfg["url"], wait_until="domcontentloaded", timeout=45000)
+            await page.wait_for_timeout(2000)
+        except Exception as e:
+            print(f"  [오류] {symbol} Greeks 페이지 로드 실패: {e}")
+            await browser.close()
+            return pd.DataFrame()
+        await browser.close()
+
+    df = parse_greeks_from_json_candidates(captured_json)
+    n_iv = int(df["impliedVolatility"].notna().sum()) if not df.empty and "impliedVolatility" in df.columns else 0
+    print(f"  [결과] Greeks {len(df)}행 확보 (IV 있는 행 {n_iv}개)")
+    return df
+
+
+def _merge_greeks(df_main: pd.DataFrame, df_greeks: pd.DataFrame) -> pd.DataFrame:
+    """옵션 프라이스 페이지 결과(df_main: strike/type/openInterest/가격 등)에
+    Greeks 페이지 결과(df_greeks: strike/type/IV/그릭스)를 (strike, type) 기준으로
+    왼쪽 조인한다. df_greeks가 비어있으면(캡처 실패 등) df_main을 그대로 돌려준다
+    (그릭스 없이도 콜월/풋월 등 OI 기반 분석은 계속 가능하게)."""
+    if df_greeks is None or df_greeks.empty:
+        return df_main
+    greek_cols = ["strike", "type", "impliedVolatility", "delta_barchart",
+                  "gamma_barchart", "theta_barchart", "vega_barchart"]
+    df_greeks = df_greeks[[c for c in greek_cols if c in df_greeks.columns]]
+    merged = df_main.drop(
+        columns=[c for c in greek_cols if c != "strike" and c != "type" and c in df_main.columns]
+    ).merge(df_greeks, on=["strike", "type"], how="left")
+    return merged
+
+
 def run_capture_sync(symbols: list, csv_path: str):
     """symbols(예: ["NQ"] 또는 ["NQ","ES"])를 Barchart에서 캡처해 csv_path에 저장/병합.
 
@@ -1207,6 +1347,43 @@ def run_capture_sync(symbols: list, csv_path: str):
                 nest_asyncio.apply()
                 pw_results = asyncio.get_event_loop().run_until_complete(_run())
             results.update(pw_results)
+
+    # --- Greeks 병합 (2026-08 말 이후: 옵션 프라이스 페이지는 IV/그릭스를 안 줘서
+    # 별도 "Volatility & Greeks" 페이지에서 따로 받아와 strike+type 기준으로 합친다).
+    # 이 단계는 항상 Playwright가 필요하다(그릭스 페이지도 requests로는 403 확인됨).
+    # 실패해도 기존 OI 기반 데이터는 그대로 살아있으니 조용히 넘어간다.
+    symbols_with_data = [s for s in symbols if s in results and not results[s].empty]
+    if symbols_with_data:
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError:
+            print("  [정보] playwright가 없어 Greeks(IV/델타/감마) 병합은 건너뜁니다 "
+                  "(OI 기반 콜월/풋월 분석은 계속 가능).")
+        else:
+            async def _run_greeks():
+                out = {}
+                for sym in symbols_with_data:
+                    gcfg = TARGETS_GREEKS.get(sym)
+                    if not gcfg:
+                        continue
+                    try:
+                        out[sym] = await capture_greeks_one(sym, gcfg, async_playwright)
+                    except Exception as e:
+                        print(f"  [오류] {sym} Greeks 캡처 실패: {e}")
+                        out[sym] = pd.DataFrame()
+                return out
+
+            try:
+                greeks_results = asyncio.run(_run_greeks())
+            except RuntimeError:
+                import nest_asyncio
+                nest_asyncio.apply()
+                greeks_results = asyncio.get_event_loop().run_until_complete(_run_greeks())
+
+            for sym, df_greeks in greeks_results.items():
+                results[sym] = _merge_greeks(results[sym], df_greeks)
+                n_iv = int(results[sym]["impliedVolatility"].notna().sum())
+                print(f"  [병합 완료] {sym}: IV 있는 행 {n_iv}/{len(results[sym])}")
 
     full = write_or_merge_futures_csv(csv_path, results)
     if full is None:
