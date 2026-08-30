@@ -1,0 +1,40 @@
+name: capture-nq-es
+
+on:
+  schedule:
+    # 5분이 GitHub Actions의 최소 간격이지만, 스케줄 실행은 부하가 몰리면
+    # 지연될 수 있다고 GitHub이 명시하고 있어서(때로 10분 이상 밀림), 너무
+    # 촘촘하게 잡아도 실제로는 그 간격을 못 지킨다. 10분으로 시작해서
+    # 지연이 심하면 늘리고, 여유 있으면 5분으로 줄여도 된다.
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}   # 서버가 API로 "지금 캡처해줘"라고 부를 때 + 수동 실행 버튼
+
+permissions:
+  contents: write   # 이 저장소에 결과를 커밋/푸시하려면 필요
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: |
+          pip install pandas numpy scipy requests playwright
+          playwright install --with-deps chromium
+
+      - name: NQ/ES 캡처
+        run: python capture_and_publish.py
+
+      - name: 결과를 저장소에 커밋 (서버가 이걸 GET으로 그냥 가져감)
+        run: |
+          git config user.name "capture-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add barchart_options_capture.csv capture_meta.json
+          git diff --quiet --cached || git commit -m "capture $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
