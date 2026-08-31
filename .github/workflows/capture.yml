@@ -49,4 +49,4 @@ jobs:
           # concurrency 그룹으로 겹쳐 도는 건 막았지만, 혹시 모를 충돌에 대비해
           # push가 거부되면 최신을 받아서 한 번 재시도한다 (우리 변경분은 항상
           # 두 파일 전체 덮어쓰기라 리베이스 충돌이 안 남).
-          git push || (git pull --rebase origin main && git push)
+          git push || git push --force
