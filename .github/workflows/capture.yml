@@ -9,6 +9,15 @@ on:
     - cron: '*/10 * * * *'
   workflow_dispatch: {}   # 서버가 API로 "지금 캡처해줘"라고 부를 때 + 수동 실행 버튼
 
+# 동시에 여러 개가 겹쳐 돌면(스케줄 + 수동/API 트리거가 비슷한 시각에 겹치는 경우 등)
+# 나중에 끝난 쪽의 git push가 "fetch first" 충돌로 조용히 실패할 수 있다. 그룹을
+# 걸어서 항상 하나씩만(먼저 시작한 게 끝난 뒤 다음 게) 돌게 강제한다.
+# cancel-in-progress: false로 둬서, 이미 도는 중인 캡처를 취소하지 않고 다음
+# 트리거는 대기열에 쌓아둔다(취소하면 그 실행이 만들던 새 데이터를 날리게 됨).
+concurrency:
+  group: capture-nq-es
+  cancel-in-progress: false
+
 permissions:
   contents: write   # 이 저장소에 결과를 커밋/푸시하려면 필요
 
@@ -37,4 +46,7 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add barchart_options_capture.csv capture_meta.json
           git diff --quiet --cached || git commit -m "capture $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          git push
+          # concurrency 그룹으로 겹쳐 도는 건 막았지만, 혹시 모를 충돌에 대비해
+          # push가 거부되면 최신을 받아서 한 번 재시도한다 (우리 변경분은 항상
+          # 두 파일 전체 덮어쓰기라 리베이스 충돌이 안 남).
+          git push || (git pull --rebase origin main && git push)
