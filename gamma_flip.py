@@ -23,11 +23,6 @@ try:
 except ImportError:
     sys.exit("requests가 필요합니다: pip install requests")
 
-# ---------------------------------------------------------------
-# [디버그] 태그 붙은 상세 로그 on/off 스위치. 기본은 꺼짐(조용한 출력) —
-# 웹 서비스에서 결과 화면에 캡처 내부 동작 로그까지 다 보이는 걸 막기 위함.
-# 켜려면: 환경변수 GAMMA_FLIP_DEBUG=1, 또는 CLI에 --debug.
-# ---------------------------------------------------------------
 DEBUG_VERBOSE = os.environ.get("GAMMA_FLIP_DEBUG", "0") == "1"
 
 
@@ -35,11 +30,6 @@ def dprint(*args, **kwargs):
     if DEBUG_VERBOSE:
         print(*args, **kwargs)
 
-
-# ---------------------------------------------------------------
-# NQ=F / ES=F 처리용 설정. --ticker가 이 중 하나(대소문자 무관)로 들어오면
-# yfinance를 건너뛰고 Barchart CSV 기반 경로로 전환한다.
-# ---------------------------------------------------------------
 FUTURES_TICKER_ALIASES = {
     "NQ": "NQ", "NQ=F": "NQ",
     "ES": "ES", "ES=F": "ES",
@@ -47,37 +37,12 @@ FUTURES_TICKER_ALIASES = {
 FUTURES_CSV_DEFAULT = "barchart_options_capture.csv"
 FUTURES_MIN_IV_ROWS_DEFAULT = 5
 FUTURES_WALL_BANDWIDTH_PCT_DEFAULT = 0.01
-
-# ---------------------------------------------------------------
-# Barchart 캡처 대상. 예전에는 URL에 만기 코드를 직접 박아뒀는데(NQU26,
-# MQ1U26 등), 근월 선물이 롤될 때마다(예: U26 9월물 -> Z26 12월물) 사람이
-# 수동으로 갱신해야 하는 문제가 있었다.
-#
-# 실제로는 그럴 필요가 없다: capture_one_requests()/capture_one()이 페이지를
-# 연 뒤 실제 API 심볼은 그 HTML 안의 data-api-config(우선) 또는 bc_ticker
-# 메타값에서 매번 새로 읽어온다(extract_api_symbol_from_config, extract_page_meta
-# 참고) — 즉 cfg["url"]은 "어느 페이지를 열지"만 정할 뿐, 거기 박힌 심볼 문자열
-# 자체가 실제 API 호출에 쓰이는 게 아니다. 그래서 Barchart가 제공하는 "최근월물"
-# 별칭인 NQ*0/ES*0을 대신 쓰면, 페이지 자체가 그 시점의 실제 최근월 계약으로
-# 서버사이드에서 렌더링돼서 내려오고(2026-08-26 확인: NQ*0/options가 그 순간의
-# NQU26 9월물 데이터를 실시간으로 그대로 보여줌), data-api-config/bc_ticker도
-# 그 실제 계약의 진짜 심볼로 채워져 있다. 결과적으로 만기가 롤돼도 이 URL을
-# 손댈 필요가 없다 — Barchart가 알아서 다음 근월물로 넘겨준다.
-#
-# 혹시 나중에 Barchart가 "*0" 별칭 처리 방식을 바꿔서 이게 더 이상 안 풀리면
-# (즉 실제 계약이 아니라 "*0"이 그대로 남은 문자열이 온다면) capture_one_requests()
-# 쪽에 넣어둔 경고 로그("확인 필요: 심볼에 '*' 포함")가 찍히니 그때 다시
-# 만기 코드를 직접 박는 예전 방식으로 되돌리면 된다.
-# ---------------------------------------------------------------
 TARGETS = {
     "NQ": {"url": "https://www.barchart.com/futures/quotes/NQ*0/options"
                   "?moneyness=allRows&futuresOptionsView=merged", "multiplier": 20.0},
     "ES": {"url": "https://www.barchart.com/futures/quotes/ES*0/options"
                   "?moneyness=allRows&futuresOptionsView=merged", "multiplier": 50.0},
 }
-# "Volatility & Greeks" 페이지 — 옵션 프라이스 페이지(TARGETS)와 다른 뷰라 별도 URL.
-# 2026-08 말경 옵션 프라이스 페이지가 더 이상 IV/그릭스를 안 내려주는 게 확인돼서
-# (openInterest 등은 그대로 나옴) 이 페이지에서 그릭스만 따로 캡처해 병합한다.
 TARGETS_GREEKS = {
     "NQ": {"url": "https://www.barchart.com/futures/quotes/NQ*0/volatility-greeks"
                   "?moneyness=allRows&futuresOptionsView=merged"},
