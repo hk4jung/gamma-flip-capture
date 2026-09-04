@@ -1,12 +1,12 @@
 name: capture-nq-es
 
 on:
-  schedule:
+  #schedule:
     # 5분이 GitHub Actions의 최소 간격이지만, 스케줄 실행은 부하가 몰리면
     # 지연될 수 있다고 GitHub이 명시하고 있어서(때로 10분 이상 밀림), 너무
     # 촘촘하게 잡아도 실제로는 그 간격을 못 지킨다. 10분으로 시작해서
     # 지연이 심하면 늘리고, 여유 있으면 5분으로 줄여도 된다.
-    - cron: '*/10 * * * *'
+    #- cron: '*/10 * * * *'
   workflow_dispatch: {}   # 서버가 API로 "지금 캡처해줘"라고 부를 때 + 수동 실행 버튼
 
 # 동시에 여러 개가 겹쳐 돌면(스케줄 + 수동/API 트리거가 비슷한 시각에 겹치는 경우 등)
@@ -34,7 +34,7 @@ jobs:
 
       - name: 의존성 설치
         run: |
-          pip install pandas numpy scipy requests playwright yfinance
+          pip install pandas numpy scipy requests playwright yfinance html5lib lxml beautifulsoup4
           playwright install --with-deps chromium
 
       - name: NQ/ES 캡처
