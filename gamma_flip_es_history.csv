@@ -1,0 +1,2 @@
+date_kst,datetime_kst,spot,mode,net_gex,regime,gamma_flip_level,flip_distance_pt,flip_distance_pct,call_wall,call_wall_oi,put_wall,put_wall_oi,call_wall_smoothed,call_wall_smoothed_oi,put_wall_smoothed,put_wall_smoothed_oi
+2026-09-19,2026-09-19 20:01:22,7712.5,black76_scan,-334880547.0,네거티브 감마,7799.5,87.0,1.13,8900.0,19758,7500.0,16352,8908.58,20989.0,6560.23,28341.0
