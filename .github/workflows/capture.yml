@@ -1,12 +1,13 @@
 name: capture-nq-es
 
 on:
-  #schedule:
-    # 5분이 GitHub Actions의 최소 간격이지만, 스케줄 실행은 부하가 몰리면
-    # 지연될 수 있다고 GitHub이 명시하고 있어서(때로 10분 이상 밀림), 너무
-    # 촘촘하게 잡아도 실제로는 그 간격을 못 지킨다. 10분으로 시작해서
-    # 지연이 심하면 늘리고, 여유 있으면 5분으로 줄여도 된다.
-    #- cron: '*/10 * * * *'
+  schedule:
+    # 매일 한국시간(KST, UTC+9) 10:30에 실행. cron은 항상 UTC 기준이라
+    # 10:30 KST = 01:30 UTC. GitHub이 명시하듯 스케줄 실행은 부하가 몰리면
+    # 지연될 수 있으니(때로 10분 이상 밀림), 정확히 10:30에 안 도는 날이
+    # 있어도 정상이다 — 실제 실행 시각은 daily_capture_and_record.py가
+    # 매번 다시 계산해서 KST로 기록하므로 스케줄 지연과 무관하게 정확하다.
+    - cron: '30 1 * * *'
   workflow_dispatch: {}   # 서버가 API로 "지금 캡처해줘"라고 부를 때 + 수동 실행 버튼
 
 # 동시에 여러 개가 겹쳐 돌면(스케줄 + 수동/API 트리거가 비슷한 시각에 겹치는 경우 등)
@@ -37,16 +38,18 @@ jobs:
           pip install pandas numpy scipy requests playwright yfinance html5lib lxml beautifulsoup4
           playwright install --with-deps chromium
 
-      - name: NQ/ES 캡처
-        run: python capture_and_publish.py
+      - name: NQ/ES 캡처 + 날짜별 보관 + 감마 플립 히스토리 기록
+        run: python daily_capture_and_record.py
 
-      - name: 결과를 저장소에 커밋 (서버가 이걸 GET으로 그냥 가져감)
+      - name: 결과를 저장소에 커밋 (서버가 barchart_options_capture.csv를 GET으로 그냥 가져감)
         run: |
           git config user.name "capture-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add barchart_options_capture.csv capture_meta.json
+          git add barchart_options_capture.csv capture_meta.json archive/ \
+                  gamma_flip_nq_history.csv gamma_flip_es_history.csv
           git diff --quiet --cached || git commit -m "capture $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           # concurrency 그룹으로 겹쳐 도는 건 막았지만, 혹시 모를 충돌에 대비해
-          # push가 거부되면 최신을 받아서 한 번 재시도한다 (우리 변경분은 항상
-          # 두 파일 전체 덮어쓰기라 리베이스 충돌이 안 남).
+          # push가 거부되면 최신을 받아서 한 번 재시도한다. archive/의 날짜별
+          # 파일은 매일 새 파일이라 리베이스 충돌이 거의 안 나고, 혹시 같은 날
+          # 두 번 실행돼도 그날 파일을 덮어쓸 뿐이라 안전하다.
           git push || git push --force
